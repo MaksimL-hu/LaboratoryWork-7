@@ -50,6 +50,11 @@ TEXT_CANVAS_SIZE = (2400, 400)
 BINARIZE_THRESHOLD = 200
 CROP_PADDING = 0
 
+IMAGE_FRAME_PADDING = 8
+IMAGE_FRAME_BORDER_WIDTH = 3
+IMAGE_FRAME_BORDER_COLOR = (0, 160, 0)
+IMAGE_FRAME_BACKGROUND_COLOR = (255, 255, 255)
+
 # Алфавит
 ALPHABET = [
     "А", "Б", "В", "Г", "Д", "Є", "Ж", "Ѕ", "З", "И", "І", "Й",
@@ -162,9 +167,46 @@ def load_image_as_binary(path: Path, threshold: int = 200) -> tuple[np.ndarray, 
     return gray, binary
 
 
+def add_green_frame(image: Image.Image) -> Image.Image:
+    """
+    Добавляет зелёную рамку и белый отступ вокруг изображения.
+    """
+    image_rgb = image.convert("RGB")
+
+    out_w = image_rgb.width + 2 * (IMAGE_FRAME_PADDING + IMAGE_FRAME_BORDER_WIDTH)
+    out_h = image_rgb.height + 2 * (IMAGE_FRAME_PADDING + IMAGE_FRAME_BORDER_WIDTH)
+
+    out_img = Image.new("RGB", (out_w, out_h), IMAGE_FRAME_BACKGROUND_COLOR)
+    draw = ImageDraw.Draw(out_img)
+
+    for i in range(IMAGE_FRAME_BORDER_WIDTH):
+        draw.rectangle(
+            [i, i, out_w - 1 - i, out_h - 1 - i],
+            outline=IMAGE_FRAME_BORDER_COLOR,
+        )
+
+    paste_xy = (
+        IMAGE_FRAME_PADDING + IMAGE_FRAME_BORDER_WIDTH,
+        IMAGE_FRAME_PADDING + IMAGE_FRAME_BORDER_WIDTH,
+    )
+    out_img.paste(image_rgb, paste_xy)
+    return out_img
+
+
+def save_gray_image_with_frame(gray: np.ndarray, path: Path) -> None:
+    img = Image.fromarray(gray, mode="L")
+    add_green_frame(img).save(path)
+
+
 def save_binary_image(binary: np.ndarray, path: Path) -> None:
     img = np.where(binary == 1, 0, 255).astype(np.uint8)
-    Image.fromarray(img, mode="L").save(path)
+    pil_img = Image.fromarray(img, mode="L")
+    add_green_frame(pil_img).save(path)
+
+
+def save_original_image_with_frame(input_path: Path, path: Path) -> None:
+    img = Image.open(input_path).convert("RGB")
+    add_green_frame(img).save(path)
 
 
 def crop_binary_image(binary: np.ndarray, padding: int = 0) -> np.ndarray:
@@ -234,7 +276,6 @@ def render_text_line(
     if word_spacing is None:
         word_spacing = max(letter_spacing * 3, font.size // 2)
 
-    # оценка общей высоты
     bboxes = []
     for ch in text:
         if ch == " ":
@@ -315,7 +356,6 @@ def choose_best_experiment_render(
         if best_result is None or candidate["score"] > best_result["score"]:
             best_result = candidate
 
-        # идеальный случай: число сегментов совпало
         if len(char_rects) == expected_len:
             break
 
@@ -685,36 +725,28 @@ def resolve_confusable_pair(
     top1, top2 = hypotheses[0], hypotheses[1]
     pair = {top1[0], top2[0]}
 
-    # Разбираем только близкие гипотезы
     if abs(top1[1] - top2[1]) > 0.02:
         return hypotheses
 
-    # К vs Н
     if pair == {"К", "Н"}:
         rm = right_middle_density(normalized)
         ur = upper_right_density(normalized)
         lr = lower_right_density(normalized)
 
-        # у Н сильнее правая вертикаль в центре,
-        # у К сильнее верхний и нижний правые участки
         score_n = rm
         score_k = 0.5 * (ur + lr)
 
         preferred = "Н" if score_n >= score_k else "К"
 
-    # И vs П
     elif pair == {"И", "П"}:
         diag = main_diagonal_density(normalized, band=4)
         top_band = region_density(normalized, 0.05, 0.20, 0.10, 0.90)
 
-        # у И сильнее диагональ,
-        # у П сильнее верхняя горизонталь
         preferred = "И" if diag >= top_band else "П"
 
     else:
         return hypotheses
 
-    # Поднимаем выбранную букву наверх
     idx = None
     for i, h in enumerate(hypotheses):
         if h[0] == preferred:
@@ -1206,7 +1238,8 @@ def main():
 
     # 2. Распознавание входного bmp
     gray_input, binary_input = load_image_as_binary(input_path, threshold=BINARIZE_THRESHOLD)
-    Image.fromarray(gray_input, mode="L").save(INPUT_DIR / "input_gray.bmp")
+    save_original_image_with_frame(input_path, INPUT_DIR / "input_phrase_original.png")
+    save_gray_image_with_frame(gray_input, INPUT_DIR / "input_gray.bmp")
     save_binary_image(binary_input, INPUT_DIR / "input_binary.bmp")
 
     input_result = run_recognition_pipeline(
@@ -1236,7 +1269,7 @@ def main():
     exp_gray = best_exp["gray"]
     exp_binary = best_exp["binary"]
 
-    Image.fromarray(exp_gray, mode="L").save(EXPERIMENT_DIR / "experiment_gray.bmp")
+    save_gray_image_with_frame(exp_gray, EXPERIMENT_DIR / "experiment_gray.bmp")
     save_binary_image(exp_binary, EXPERIMENT_DIR / "experiment_binary.bmp")
 
     save_hypotheses_txt(best_exp["hypotheses"], EXPERIMENT_HYPOTHESES_TXT)
